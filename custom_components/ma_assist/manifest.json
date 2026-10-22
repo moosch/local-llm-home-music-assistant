@@ -1,0 +1,13 @@
+{
+  "domain": "ma_assist",
+  "name": "Music Assistant Voice Tools",
+  "codeowners": ["@moosch"],
+  "config_flow": true,
+  "dependencies": ["music_assistant"],
+  "documentation": "https://github.com/moosch/local-llm-music-assistant",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

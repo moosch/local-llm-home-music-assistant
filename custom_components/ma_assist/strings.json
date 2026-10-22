@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Music Assistant Voice Tools",
+        "description": "Choose the Music Assistant server whose players the voice assistant should control.",
+        "data": {
+          "music_assistant_entry_id": "Music Assistant server"
+        }
+      }
+    },
+    "abort": {
+      "music_assistant_not_found": "Set up the Music Assistant integration first.",
+      "single_instance_allowed": "Music Assistant Voice Tools is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Music Assistant Voice Tools",
+        "data": {
+          "default_player": "Default player",
+          "room_aliases": "Room aliases"
+        },
+        "data_description": {
+          "default_player": "Used when no room is given and the voice satellite has no area, or when a room has several players.",
+          "room_aliases": "One per line, for spoken names that differ from area names, e.g. `office: media_player.wiim_office`."
+        }
+      }
+    },
+    "error": {
+      "invalid_aliases": "Each line must look like `spoken name: media_player.entity_id`."
+    }
+  }
+}
