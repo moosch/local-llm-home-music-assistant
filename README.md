@@ -15,12 +15,20 @@ Assistant's native LLM Tools API.
 
 ## Install
 
-1. Copy `custom_components/ma_assist` into your HA `config/custom_components/`, or add
-   this repo to HACS as a custom repository.
-2. Restart Home Assistant.
-3. **Settings → Devices & services → Add integration → Music Assistant Voice Tools.**
-4. In your conversation agent's options, enable **Music Assistant** under the
+Install through [HACS](https://hacs.xyz/) as a custom repository:
+
+1. In Home Assistant, open **HACS → ⋮ (top right) → Custom repositories**.
+2. Paste `https://github.com/moosch/local-llm-home-music-assistant`, set the type to
+   **Integration**, and click **Add**.
+3. Find **Music Assistant Voice Tools** in HACS and click **Download**.
+4. Restart Home Assistant.
+5. Go to **Settings → Devices & services → Add integration** and search for
+   **Music Assistant Voice Tools**.
+6. In your conversation agent's options, enable **Music Assistant** under the
    "Control Home Assistant" LLM APIs.
+
+HACS will flag new versions as updates. After downloading one, restart Home Assistant
+to load it.
 
 ## How rooms are resolved
 
