@@ -6,6 +6,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.ma_assist.player_resolver import (
     PlayerNotFoundError,
     available_rooms,
+    resolve_control_player,
     resolve_player,
 )
 from custom_components.ma_assist.settings import (
@@ -16,7 +17,7 @@ from custom_components.ma_assist.settings import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar, device_registry as dr
 
-from .conftest import PlayerFactory
+from .conftest import PlayerFactory, add_satellite
 
 
 def make_settings(
@@ -65,11 +66,25 @@ async def test_configured_room_alias_wins(
     office: ar.AreaEntry,
 ) -> None:
     players.add(music_assistant_entry, "Office WiiM", office.id)
-    settings = make_settings(
-        music_assistant_entry, room_aliases={"den": "media_player.den_speaker"}
-    )
+    den_speaker = players.add(music_assistant_entry, "Den Speaker")
+    settings = make_settings(music_assistant_entry, room_aliases={"den": den_speaker})
 
-    assert resolve_player(hass, settings, "Den", None) == "media_player.den_speaker"
+    assert resolve_player(hass, settings, "Den", None) == den_speaker
+
+
+async def test_alias_to_native_entity_is_an_error(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    native_entry = MockConfigEntry(domain="sonos")
+    native_entry.add_to_hass(hass)
+    native = players.add(native_entry, "Lounge Sonos", platform="sonos")
+    settings = make_settings(music_assistant_entry, room_aliases={"lounge": native})
+
+    with pytest.raises(PlayerNotFoundError, match="not a Music Assistant player"):
+        resolve_player(hass, settings, "lounge", None)
 
 
 async def test_ignores_native_duplicate_players(
@@ -112,16 +127,11 @@ async def test_falls_back_to_satellite_area(
 ) -> None:
     players.add(music_assistant_entry, "Office WiiM", office.id)
     kitchen_player = players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
-    satellite_entry = MockConfigEntry(domain="esphome")
-    satellite_entry.add_to_hass(hass)
-    satellite = device_registry.async_get_or_create(
-        config_entry_id=satellite_entry.entry_id, identifiers={("esphome", "sat")}
-    )
-    device_registry.async_update_device(satellite.id, area_id=kitchen.id)
+    satellite_id = add_satellite(hass, device_registry, kitchen.id)
 
     settings = make_settings(music_assistant_entry)
 
-    assert resolve_player(hass, settings, None, satellite.id) == kitchen_player
+    assert resolve_player(hass, settings, None, satellite_id) == kitchen_player
 
 
 async def test_falls_back_to_default_player(
@@ -201,6 +211,75 @@ async def test_available_rooms(
     )
 
     assert available_rooms(hass, settings) == ["Garage", "Office", "den"]
+
+
+async def test_control_prefers_active_player_in_satellite_room(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    device_registry: dr.DeviceRegistry,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    kitchen_player = players.add(
+        music_assistant_entry, "Kitchen Speaker", kitchen.id, state="paused"
+    )
+    satellite_id = add_satellite(hass, device_registry, kitchen.id)
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, None, satellite_id) == kitchen_player
+
+
+async def test_control_reaches_the_only_active_player(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    device_registry: dr.DeviceRegistry,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    office_player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    satellite_id = add_satellite(hass, device_registry, kitchen.id)
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, None, satellite_id) == office_player
+
+
+async def test_control_with_several_active_falls_back_to_satellite_room(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    device_registry: dr.DeviceRegistry,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    lounge = area_registry.async_create("Lounge")
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    players.add(music_assistant_entry, "Lounge Sonos", lounge.id, state="playing")
+    kitchen_player = players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    satellite_id = add_satellite(hass, device_registry, kitchen.id)
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, None, satellite_id) == kitchen_player
+
+
+async def test_control_with_named_room_ignores_activity(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    kitchen_player = players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, "kitchen", None) == kitchen_player
 
 
 def test_parse_room_aliases() -> None:

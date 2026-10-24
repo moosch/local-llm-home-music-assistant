@@ -4,6 +4,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ma_assist.const import (
     CONF_DEFAULT_PLAYER,
+    CONF_DISABLED_TOOLS,
     CONF_MUSIC_ASSISTANT_ENTRY_ID,
     CONF_ROOM_ALIASES,
     DOMAIN,
@@ -12,6 +13,8 @@ from homeassistant.config_entries import SOURCE_USER, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import llm
+
+from .conftest import PlayerFactory
 
 
 def add_music_assistant_entry(hass: HomeAssistant) -> MockConfigEntry:
@@ -74,8 +77,14 @@ async def test_setup_registers_and_unload_removes_api(hass: HomeAssistant) -> No
     assert DOMAIN not in [api.id for api in llm.async_get_apis(hass)]
 
 
-async def test_options_flow_rejects_bad_aliases(hass: HomeAssistant) -> None:
+async def test_options_flow_validates_aliases(
+    hass: HomeAssistant, players: PlayerFactory
+) -> None:
     music_assistant_entry = add_music_assistant_entry(hass)
+    office_player = players.add(music_assistant_entry, "Office WiiM")
+    native_entry = MockConfigEntry(domain="sonos")
+    native_entry.add_to_hass(hass)
+    native_player = players.add(native_entry, "Lounge Sonos", platform="sonos")
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_MUSIC_ASSISTANT_ENTRY_ID: music_assistant_entry.entry_id},
@@ -87,12 +96,17 @@ async def test_options_flow_rejects_bad_aliases(hass: HomeAssistant) -> None:
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {CONF_ROOM_ALIASES: "office"}
     )
-    assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {CONF_ROOM_ALIASES: "invalid_aliases"}
 
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_ROOM_ALIASES: f"lounge: {native_player}"}
+    )
+    assert result["errors"] == {CONF_ROOM_ALIASES: "alias_not_music_assistant"}
+
     options = {
-        CONF_DEFAULT_PLAYER: "media_player.office",
-        CONF_ROOM_ALIASES: "office: media_player.office",
+        CONF_DEFAULT_PLAYER: office_player,
+        CONF_ROOM_ALIASES: f"study: {office_player}",
+        CONF_DISABLED_TOOLS: ["set_volume"],
     }
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], options

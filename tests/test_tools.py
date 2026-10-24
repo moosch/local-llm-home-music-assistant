@@ -7,7 +7,12 @@ from pytest_homeassistant_custom_component.common import (
 
 from custom_components.ma_assist.api import MusicAssistantLLMAPI
 from custom_components.ma_assist.settings import MaAssistSettings
-from custom_components.ma_assist.tools import PlayMusicTool
+from custom_components.ma_assist.tools import (
+    MediaControlTool,
+    PlayMusicTool,
+    SetVolumeTool,
+    build_tools,
+)
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import area_registry as ar, llm
 
@@ -87,4 +92,96 @@ async def test_api_instance_lists_rooms_and_tools(
     instance = await api.async_get_api_instance(make_llm_context())
 
     assert "Available rooms: Office." in instance.api_prompt
-    assert [tool.name for tool in instance.tools] == ["play_music"]
+    assert [tool.name for tool in instance.tools] == [
+        "play_music",
+        "media_control",
+        "set_volume",
+    ]
+
+
+def test_disabled_tools_are_left_out() -> None:
+    settings = MaAssistSettings("entry", disabled_tools=frozenset({"set_volume"}))
+
+    assert [tool.name for tool in build_tools(settings)] == [
+        "play_music",
+        "media_control",
+    ]
+
+
+async def test_media_control_pauses_the_playing_player(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    office_player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    calls = async_mock_service(hass, "media_player", "media_pause")
+    tool = MediaControlTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(tool_name="media_control", tool_args={"action": "pause"})
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result == llm.ToolResult(data={"done": "pause", "player": "Office WiiM"})
+    assert [call.data for call in calls] == [{"entity_id": office_player}]
+
+
+async def test_set_volume_to_level(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    player = players.add(music_assistant_entry, "Office WiiM", office.id)
+    calls = async_mock_service(hass, "media_player", "volume_set")
+    tool = SetVolumeTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="set_volume", tool_args={"level": 30, "area": "office"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result == llm.ToolResult(data={"volume": 30, "player": "Office WiiM"})
+    assert [call.data for call in calls] == [{"entity_id": player, "volume_level": 0.3}]
+
+
+async def test_set_volume_nudges_and_clamps(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id, volume_level=0.95)
+    calls = async_mock_service(hass, "media_player", "volume_set")
+    tool = SetVolumeTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="set_volume", tool_args={"direction": "up", "area": "office"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.data["volume"] == 100
+    assert calls[0].data["volume_level"] == 1.0
+
+
+async def test_set_volume_nudge_needs_known_volume(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    calls = async_mock_service(hass, "media_player", "volume_set")
+    tool = SetVolumeTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="set_volume", tool_args={"direction": "down", "area": "office"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.error is True
+    assert "Current volume is unknown" in str(result.data["error"])
+    assert calls == []

@@ -42,17 +42,25 @@ If no `area` is given, the player in the voice satellite's area is used, then th
 configured default player. Only Music Assistant's own `media_player` entities are
 considered, not the native duplicates (e.g. the WiiM entity).
 
+Pause, skip and volume commands without a room go to whatever is playing: first a
+playing (or paused) player in the satellite's room, otherwise the only playing player
+in the house. If that doesn't settle it, they use the same rules as above.
+
 ## Options
 
 - **Default player**: used when there's no room to go on, or a room has several players.
-- **Room aliases**: one per line, `spoken name: media_player.entity_id`.
+- **Room aliases**: one per line, `spoken name: media_player.entity_id`. The entity
+  must be the one provided by the **Music Assistant** integration, not the speaker's
+  own entity: Music Assistant ignores the latter, so nothing would play.
+- **Disabled tools**: hide tools you don't use. Fewer tools helps small models.
 
 ## Tools
 
-| Tool | Status |
-|------|--------|
-| `play_music` | ✅ |
-| `media_control`, `set_volume` | planned (M2) |
+| Tool | What it does |
+|------|--------------|
+| `play_music` | Play a song, album, artist, playlist or radio station |
+| `media_control` | Pause, resume, stop, next, previous |
+| `set_volume` | Set a level (0–100) or nudge up/down by 10% |
 | `search_music`, `whats_playing` | planned (M3) |
 
 ## Development

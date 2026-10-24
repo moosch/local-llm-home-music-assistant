@@ -16,19 +16,24 @@ from homeassistant.helpers.selector import (
     ConfigEntrySelectorConfig,
     EntitySelector,
     EntitySelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
 )
 
 from .const import (
+    ALL_TOOLS,
     CONF_DEFAULT_PLAYER,
+    CONF_DISABLED_TOOLS,
     CONF_MUSIC_ASSISTANT_ENTRY_ID,
     CONF_ROOM_ALIASES,
     DOMAIN,
     MEDIA_PLAYER_DOMAIN,
     MUSIC_ASSISTANT_DOMAIN,
 )
-from .settings import InvalidAliasesError, parse_room_aliases
+from .player_resolver import is_music_assistant_player
+from .settings import InvalidAliasesError, MaAssistSettings, parse_room_aliases
 
 TITLE = "Music Assistant Voice Tools"
 
@@ -49,6 +54,9 @@ OPTIONS_SCHEMA = probatio.Schema(
         ),
         probatio.Optional(CONF_ROOM_ALIASES): TextSelector(
             TextSelectorConfig(multiline=True)
+        ),
+        probatio.Optional(CONF_DISABLED_TOOLS): SelectSelector(
+            SelectSelectorConfig(options=ALL_TOOLS, multiple=True)
         ),
     }
 )
@@ -93,14 +101,25 @@ class MaAssistOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            try:
-                parse_room_aliases(user_input.get(CONF_ROOM_ALIASES, ""))
-            except InvalidAliasesError:
-                errors[CONF_ROOM_ALIASES] = "invalid_aliases"
-            else:
+            alias_error = self.room_aliases_error(user_input.get(CONF_ROOM_ALIASES, ""))
+            if alias_error is None:
                 return self.async_create_entry(data=user_input)
+            errors[CONF_ROOM_ALIASES] = alias_error
 
         schema = self.add_suggested_values_to_schema(
             OPTIONS_SCHEMA, user_input or self.config_entry.options
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    def room_aliases_error(self, text: str) -> str | None:
+        try:
+            aliases = parse_room_aliases(text)
+        except InvalidAliasesError:
+            return "invalid_aliases"
+        settings = MaAssistSettings(
+            self.config_entry.data[CONF_MUSIC_ASSISTANT_ENTRY_ID]
+        )
+        for entity_id in aliases.values():
+            if not is_music_assistant_player(self.hass, settings, entity_id):
+                return "alias_not_music_assistant"
+        return None

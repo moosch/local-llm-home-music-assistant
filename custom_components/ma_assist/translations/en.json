@@ -20,16 +20,19 @@
         "title": "Music Assistant Voice Tools",
         "data": {
           "default_player": "Default player",
-          "room_aliases": "Room aliases"
+          "room_aliases": "Room aliases",
+          "disabled_tools": "Disabled tools"
         },
         "data_description": {
           "default_player": "Used when no room is given and the voice satellite has no area, or when a room has several players.",
-          "room_aliases": "One per line, for spoken names that differ from area names, e.g. `office: media_player.wiim_office`."
+          "room_aliases": "One per line, for spoken names that differ from area names, e.g. `office: media_player.wiim_office`.",
+          "disabled_tools": "Tools to hide from the voice assistant. Fewer tools helps small models."
         }
       }
     },
     "error": {
-      "invalid_aliases": "Each line must look like `spoken name: media_player.entity_id`."
+      "invalid_aliases": "Each line must look like `spoken name: media_player.entity_id`.",
+      "alias_not_music_assistant": "Each alias must point to a Music Assistant player, not the speaker's own entity. Look for the entity provided by the Music Assistant integration."
     }
   }
 }

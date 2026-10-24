@@ -4,7 +4,12 @@ from dataclasses import dataclass, field
 
 from homeassistant.config_entries import ConfigEntry
 
-from .const import CONF_DEFAULT_PLAYER, CONF_MUSIC_ASSISTANT_ENTRY_ID, CONF_ROOM_ALIASES
+from .const import (
+    CONF_DEFAULT_PLAYER,
+    CONF_DISABLED_TOOLS,
+    CONF_MUSIC_ASSISTANT_ENTRY_ID,
+    CONF_ROOM_ALIASES,
+)
 
 type RoomAliases = dict[str, str]
 
@@ -18,6 +23,7 @@ class MaAssistSettings:
     music_assistant_entry_id: str
     default_player: str | None = None
     room_aliases: RoomAliases = field(default_factory=dict)
+    disabled_tools: frozenset[str] = frozenset()
 
 
 def normalize_room_name(name: str) -> str:
@@ -45,4 +51,5 @@ def settings_from_entry(entry: ConfigEntry) -> MaAssistSettings:
         music_assistant_entry_id=entry.data[CONF_MUSIC_ASSISTANT_ENTRY_ID],
         default_player=entry.options.get(CONF_DEFAULT_PLAYER) or None,
         room_aliases=parse_room_aliases(entry.options.get(CONF_ROOM_ALIASES, "")),
+        disabled_tools=frozenset(entry.options.get(CONF_DISABLED_TOOLS, [])),
     )

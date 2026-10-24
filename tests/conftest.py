@@ -40,6 +40,8 @@ class PlayerFactory:
         name: str,
         area_id: str | None = None,
         platform: str = "music_assistant",
+        state: str = "idle",
+        volume_level: float | None = None,
     ) -> str:
         device = self.device_registry.async_get_or_create(
             config_entry_id=config_entry.entry_id,
@@ -55,7 +57,10 @@ class PlayerFactory:
             config_entry=config_entry,
             device_id=device.id,
         )
-        self.hass.states.async_set(entity.entity_id, "idle", {"friendly_name": name})
+        attributes: dict[str, object] = {"friendly_name": name}
+        if volume_level is not None:
+            attributes["volume_level"] = volume_level
+        self.hass.states.async_set(entity.entity_id, state, attributes)
         return entity.entity_id
 
 
@@ -83,3 +88,16 @@ def office(area_registry: ar.AreaRegistry) -> ar.AreaEntry:
 @pytest.fixture
 def kitchen(area_registry: ar.AreaRegistry) -> ar.AreaEntry:
     return area_registry.async_create("Kitchen")
+
+
+def add_satellite(
+    hass: HomeAssistant, device_registry: dr.DeviceRegistry, area_id: str
+) -> str:
+    satellite_entry = MockConfigEntry(domain="esphome")
+    satellite_entry.add_to_hass(hass)
+    satellite = device_registry.async_get_or_create(
+        config_entry_id=satellite_entry.entry_id,
+        identifiers={("esphome", f"satellite-{area_id}")},
+    )
+    device_registry.async_update_device(satellite.id, area_id=area_id)
+    return satellite.id

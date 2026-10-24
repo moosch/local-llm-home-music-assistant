@@ -1,5 +1,6 @@
 """Resolve a spoken room name to a single Music Assistant media_player entity."""
 
+from homeassistant.components.media_player import MediaPlayerState
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import (
@@ -10,6 +11,12 @@ from homeassistant.helpers import (
 
 from .const import MEDIA_PLAYER_DOMAIN
 from .settings import MaAssistSettings, normalize_room_name
+
+ACTIVE_STATES = {
+    MediaPlayerState.PLAYING,
+    MediaPlayerState.PAUSED,
+    MediaPlayerState.BUFFERING,
+}
 
 
 class PlayerNotFoundError(HomeAssistantError):
@@ -38,11 +45,47 @@ def resolve_player(
     raise PlayerNotFoundError(f"No room given. Ask which room: {rooms}.")
 
 
+def resolve_control_player(
+    hass: HomeAssistant,
+    settings: MaAssistSettings,
+    room: str | None,
+    device_id: str | None,
+) -> str:
+    """Like resolve_player, but prefers players that are actually in use.
+
+    "Pause the music" should reach the one speaker that's playing, even when
+    the user is talking to a satellite in a quiet room.
+    """
+    if room is not None:
+        return resolve_named_room(hass, settings, room)
+
+    active = active_players(hass, settings)
+    satellite_area_id = device_area_id(hass, device_id)
+    if satellite_area_id is not None:
+        active_here = [
+            entity_id
+            for entity_id in players_in_area(hass, settings, satellite_area_id)
+            if entity_id in active
+        ]
+        if active_here:
+            return choose_player(hass, settings, active_here, "this room")
+
+    if len(active) == 1:
+        return active[0]
+
+    return resolve_player(hass, settings, None, device_id)
+
+
 def resolve_named_room(
     hass: HomeAssistant, settings: MaAssistSettings, room: str
 ) -> str:
     alias_target = settings.room_aliases.get(normalize_room_name(room))
     if alias_target is not None:
+        if not is_music_assistant_player(hass, settings, alias_target):
+            raise PlayerNotFoundError(
+                f"The alias for '{room}' points to {alias_target}, "
+                "which is not a Music Assistant player."
+            )
         return alias_target
 
     area_id = find_area_id(hass, room)
@@ -99,6 +142,26 @@ def players_in_area(
         if player_area_id(hass, player) == area_id:
             matches.append(player.entity_id)
     return matches
+
+
+def is_music_assistant_player(
+    hass: HomeAssistant, settings: MaAssistSettings, entity_id: str
+) -> bool:
+    # music_assistant.* actions silently skip other entities, so a wrong
+    # target would look like success.
+    for player in music_assistant_players(hass, settings):
+        if player.entity_id == entity_id:
+            return True
+    return False
+
+
+def active_players(hass: HomeAssistant, settings: MaAssistSettings) -> list[str]:
+    active: list[str] = []
+    for player in music_assistant_players(hass, settings):
+        state = hass.states.get(player.entity_id)
+        if state is not None and state.state in ACTIVE_STATES:
+            active.append(player.entity_id)
+    return active
 
 
 def players_named(
