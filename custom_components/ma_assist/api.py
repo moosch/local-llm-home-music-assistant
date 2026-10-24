@@ -32,4 +32,6 @@ def build_prompt(hass: HomeAssistant, settings: MaAssistSettings) -> str:
         f"Available rooms: {rooms}.\n"
         "When the user names a room, pass it as `area` using one of these names.\n"
         "If no room is given, leave `area` out; music plays where the user is.\n"
+        "Only say music was played, paused or changed after a tool call "
+        "succeeds. If it returns an error, say so.\n"
     )

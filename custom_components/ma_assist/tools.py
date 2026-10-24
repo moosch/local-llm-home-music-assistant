@@ -106,7 +106,10 @@ class PlayMusicTool(MusicAssistantTool):
 
 class MediaControlTool(MusicAssistantTool):
     name = TOOL_MEDIA_CONTROL
-    description = "Pause, resume, stop or skip the music."
+    description = (
+        "Pause, resume, stop (turn off) or skip the music. "
+        "Use this, not a turn-off tool, for music."
+    )
     parameters = probatio.Schema(
         {
             probatio.Required("action"): probatio.In(list(MEDIA_CONTROL_SERVICES)),
