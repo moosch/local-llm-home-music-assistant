@@ -42,9 +42,15 @@ If no `area` is given, the player in the voice satellite's area is used, then th
 configured default player. Only Music Assistant's own `media_player` entities are
 considered, not the native duplicates (e.g. the WiiM entity).
 
-Pause, skip and volume commands without a room go to whatever is playing: first a
-playing (or paused) player in the satellite's room, otherwise the only playing player
-in the house. If that doesn't settle it, they use the same rules as above.
+Pause, skip and volume commands go to whatever is playing:
+
+- With a room named, the playing player in that room wins if it has several.
+- Without a room, a playing player in the satellite's room wins, then the only
+  playing player in the house. If several are playing elsewhere, the assistant asks
+  which one. If nothing is playing, the rules above apply.
+- "Resume" looks for paused players instead of playing ones.
+- "What's playing?" without a room reports what's playing in the satellite's room,
+  or else every playing player in the house.
 
 ## Options
 
@@ -60,8 +66,9 @@ in the house. If that doesn't settle it, they use the same rules as above.
 |------|--------------|
 | `play_music` | Play a song, album, artist, playlist or radio station |
 | `media_control` | Pause, resume, stop, next, previous |
-| `set_volume` | Set a level (0–100) or nudge up/down by 10% |
-| `search_music`, `whats_playing` | planned (M3) |
+| `set_volume` | Set a level (0–100) or change it by a percentage |
+| `whats_playing` | What's playing, and where |
+| `search_music` | Find songs, albums, artists, playlists or radio; results can be played exactly |
 
 ## Development
 

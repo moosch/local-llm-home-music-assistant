@@ -5,7 +5,12 @@ from typing import Any
 
 import probatio
 
-from homeassistant.components.media_player import ATTR_MEDIA_VOLUME_LEVEL
+from homeassistant.components.media_player import (
+    ATTR_MEDIA_ALBUM_NAME,
+    ATTR_MEDIA_ARTIST,
+    ATTR_MEDIA_TITLE,
+    ATTR_MEDIA_VOLUME_LEVEL,
+)
 from homeassistant.const import (
     SERVICE_MEDIA_NEXT_TRACK,
     SERVICE_MEDIA_PAUSE,
@@ -14,7 +19,7 @@ from homeassistant.const import (
     SERVICE_MEDIA_STOP,
     SERVICE_VOLUME_SET,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
@@ -27,10 +32,16 @@ from .const import (
     MUSIC_ASSISTANT_DOMAIN,
     TOOL_MEDIA_CONTROL,
     TOOL_PLAY_MUSIC,
+    TOOL_SEARCH_MUSIC,
     TOOL_SET_VOLUME,
-    VOLUME_STEP,
+    TOOL_WHATS_PLAYING,
 )
-from .player_resolver import player_name, resolve_control_player, resolve_player
+from .player_resolver import (
+    in_use_nearby,
+    player_name,
+    resolve_control_player,
+    resolve_player,
+)
 from .settings import MaAssistSettings
 
 type ToolArgs = dict[str, Any]
@@ -42,6 +53,19 @@ MEDIA_CONTROL_SERVICES = {
     "next": SERVICE_MEDIA_NEXT_TRACK,
     "previous": SERVICE_MEDIA_PREVIOUS_TRACK,
 }
+
+NOW_PLAYING_ATTRIBUTES = {
+    "title": ATTR_MEDIA_TITLE,
+    "artist": ATTR_MEDIA_ARTIST,
+    "album": ATTR_MEDIA_ALBUM_NAME,
+}
+
+# Searching every type at once returns a result list per type; keep the total
+# small enough for a local model's context.
+SEARCH_LIMIT_ONE_TYPE = 5
+SEARCH_LIMIT_PER_TYPE = 3
+
+READ_ONLY = llm.ToolAnnotations(read_only=True, destructive=False, idempotent=True)
 
 
 class MusicAssistantTool(llm.Tool):
@@ -76,7 +100,8 @@ class PlayMusicTool(MusicAssistantTool):
     name = TOOL_PLAY_MUSIC
     description = (
         "Play a song, album, artist, playlist or radio station. "
-        "`query` is what to play, e.g. 'Hot Potato by The Wiggles'."
+        "`query` is what to play, e.g. 'Hot Potato by The Wiggles', "
+        "or a `uri` from search_music."
     )
     parameters = probatio.Schema(
         {
@@ -121,7 +146,11 @@ class MediaControlTool(MusicAssistantTool):
         self, hass: HomeAssistant, args: ToolArgs, llm_context: llm.LLMContext
     ) -> JsonObjectType:
         player = resolve_control_player(
-            hass, self.settings, args.get("area"), llm_context.device_id
+            hass,
+            self.settings,
+            args.get("area"),
+            llm_context.device_id,
+            resuming=args["action"] == "resume",
         )
         await hass.services.async_call(
             MEDIA_PLAYER_DOMAIN,
@@ -136,15 +165,18 @@ class MediaControlTool(MusicAssistantTool):
 class SetVolumeTool(MusicAssistantTool):
     name = TOOL_SET_VOLUME
     description = (
-        "Change the music volume. Give `level` (0-100) to set it, "
-        "or `direction` to nudge it up or down a bit."
+        "Change the music volume. Use this, not other volume tools, for music. "
+        "Give `level` (0-100) to set it, or `change` in percent to adjust it, "
+        "e.g. -10 for 'down by 10 percent'. 'A bit' is 10."
     )
     parameters = probatio.Schema(
         {
             probatio.Optional("level"): probatio.All(
                 probatio.Coerce(int), probatio.Range(min=0, max=100)
             ),
-            probatio.Optional("direction"): probatio.In(["up", "down"]),
+            probatio.Optional("change"): probatio.All(
+                probatio.Coerce(int), probatio.Range(min=-100, max=100)
+            ),
             probatio.Optional("area"): str,
         }
     )
@@ -167,6 +199,55 @@ class SetVolumeTool(MusicAssistantTool):
         return {"volume": round(volume * 100), "player": player_name(hass, player)}
 
 
+class WhatsPlayingTool(MusicAssistantTool):
+    name = TOOL_WHATS_PLAYING
+    description = "Tell what music is playing, and on which player."
+    parameters = probatio.Schema({probatio.Optional("area"): str})
+    annotations = READ_ONLY
+
+    async def async_run(
+        self, hass: HomeAssistant, args: ToolArgs, llm_context: llm.LLMContext
+    ) -> JsonObjectType:
+        area = args.get("area")
+        if area is None:
+            players = in_use_nearby(hass, self.settings, llm_context.device_id)
+        else:
+            players = [
+                resolve_control_player(hass, self.settings, area, llm_context.device_id)
+            ]
+        if not players:
+            return {"nothing_playing": True}
+        return {"players": [now_playing(hass, player) for player in players]}
+
+
+class SearchMusicTool(MusicAssistantTool):
+    name = TOOL_SEARCH_MUSIC
+    description = (
+        "Search for songs, albums, artists, playlists or radio stations. "
+        "To play a result, pass its `uri` to play_music as `query`."
+    )
+    parameters = probatio.Schema(
+        {
+            probatio.Required("query"): str,
+            probatio.Optional("media_type"): probatio.In(MEDIA_TYPES),
+        }
+    )
+    annotations = READ_ONLY
+
+    async def async_run(
+        self, hass: HomeAssistant, args: ToolArgs, llm_context: llm.LLMContext
+    ) -> JsonObjectType:
+        response = await hass.services.async_call(
+            MUSIC_ASSISTANT_DOMAIN,
+            "search",
+            search_data(self.settings, args),
+            blocking=True,
+            context=llm_context.context,
+            return_response=True,
+        )
+        return {"results": search_results(response)}
+
+
 def play_media_data(args: ToolArgs) -> dict[str, str]:
     data = {"media_id": args["query"]}
     for key in ("media_type", "enqueue"):
@@ -178,11 +259,10 @@ def play_media_data(args: ToolArgs) -> dict[str, str]:
 def target_volume(hass: HomeAssistant, player: str, args: ToolArgs) -> float:
     if "level" in args:
         return args["level"] / 100
-    direction = args.get("direction")
-    if direction is None:
-        raise HomeAssistantError("Give a volume level or a direction.")
-    step = VOLUME_STEP if direction == "up" else -VOLUME_STEP
-    return min(1.0, max(0.0, current_volume(hass, player) + step))
+    if "change" not in args:
+        raise HomeAssistantError("Give a volume level or a change.")
+    change = args["change"] / 100
+    return min(1.0, max(0.0, current_volume(hass, player) + change))
 
 
 def current_volume(hass: HomeAssistant, player: str) -> float:
@@ -193,10 +273,67 @@ def current_volume(hass: HomeAssistant, player: str) -> float:
     return float(level)
 
 
+def now_playing(hass: HomeAssistant, player: str) -> JsonObjectType:
+    summary: JsonObjectType = {"player": player_name(hass, player)}
+    state = hass.states.get(player)
+    if state is None:
+        return summary
+    summary["state"] = state.state
+    for key, attribute in NOW_PLAYING_ATTRIBUTES.items():
+        value = state.attributes.get(attribute)
+        if value is not None:
+            summary[key] = value
+    return summary
+
+
+def search_data(settings: MaAssistSettings, args: ToolArgs) -> dict[str, object]:
+    media_type = args.get("media_type")
+    if media_type is None:
+        media_types, limit = MEDIA_TYPES, SEARCH_LIMIT_PER_TYPE
+    else:
+        media_types, limit = [media_type], SEARCH_LIMIT_ONE_TYPE
+    return {
+        "config_entry_id": settings.music_assistant_entry_id,
+        "name": args["query"],
+        "media_type": media_types,
+        "limit": limit,
+    }
+
+
+def search_results(response: ServiceResponse) -> list[JsonObjectType]:
+    """Flatten MA's per-type result lists into short name/type/uri entries."""
+    results: list[JsonObjectType] = []
+    if response is None:
+        return results
+    for items in response.values():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                results.append(search_result(item))
+    return results
+
+
+def search_result(item: JsonObjectType) -> JsonObjectType:
+    result: JsonObjectType = {
+        "name": item.get("name"),
+        "type": str(item.get("media_type")),
+        "uri": item.get("uri"),
+    }
+    artists = item.get("artists")
+    if isinstance(artists, list):
+        names = [artist["name"] for artist in artists if isinstance(artist, dict)]
+        if names:
+            result["artist"] = ", ".join(str(name) for name in names)
+    return result
+
+
 def build_tools(settings: MaAssistSettings) -> list[llm.Tool]:
     tools: list[llm.Tool] = [
         PlayMusicTool(settings),
         MediaControlTool(settings),
         SetVolumeTool(settings),
+        WhatsPlayingTool(settings),
+        SearchMusicTool(settings),
     ]
     return [tool for tool in tools if tool.name not in settings.disabled_tools]

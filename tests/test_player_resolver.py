@@ -213,7 +213,7 @@ async def test_available_rooms(
     assert available_rooms(hass, settings) == ["Garage", "Office", "den"]
 
 
-async def test_control_prefers_active_player_in_satellite_room(
+async def test_control_pauses_playing_and_resumes_paused_players(
     hass: HomeAssistant,
     music_assistant_entry: MockConfigEntry,
     players: PlayerFactory,
@@ -221,14 +221,20 @@ async def test_control_prefers_active_player_in_satellite_room(
     office: ar.AreaEntry,
     kitchen: ar.AreaEntry,
 ) -> None:
-    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    office_player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
     kitchen_player = players.add(
         music_assistant_entry, "Kitchen Speaker", kitchen.id, state="paused"
     )
     satellite_id = add_satellite(hass, device_registry, kitchen.id)
     settings = make_settings(music_assistant_entry)
 
-    assert resolve_control_player(hass, settings, None, satellite_id) == kitchen_player
+    assert resolve_control_player(hass, settings, None, satellite_id) == office_player
+    assert (
+        resolve_control_player(hass, settings, None, satellite_id, resuming=True)
+        == kitchen_player
+    )
 
 
 async def test_control_reaches_the_only_active_player(
@@ -249,7 +255,7 @@ async def test_control_reaches_the_only_active_player(
     assert resolve_control_player(hass, settings, None, satellite_id) == office_player
 
 
-async def test_control_with_several_active_falls_back_to_satellite_room(
+async def test_control_asks_when_several_are_playing(
     hass: HomeAssistant,
     music_assistant_entry: MockConfigEntry,
     players: PlayerFactory,
@@ -261,11 +267,63 @@ async def test_control_with_several_active_falls_back_to_satellite_room(
     lounge = area_registry.async_create("Lounge")
     players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
     players.add(music_assistant_entry, "Lounge Sonos", lounge.id, state="playing")
-    kitchen_player = players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    satellite_id = add_satellite(hass, device_registry, kitchen.id)
+    settings = make_settings(music_assistant_entry)
+
+    with pytest.raises(
+        PlayerNotFoundError, match="several players: Office WiiM, Lounge Sonos"
+    ):
+        resolve_control_player(hass, settings, None, satellite_id)
+
+
+async def test_control_prefers_playing_over_paused(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    office_player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id, state="paused")
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, None, None) == office_player
+
+
+async def test_control_prefers_playing_player_in_satellite_room(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    device_registry: dr.DeviceRegistry,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    kitchen_player = players.add(
+        music_assistant_entry, "Kitchen Speaker", kitchen.id, state="playing"
+    )
     satellite_id = add_satellite(hass, device_registry, kitchen.id)
     settings = make_settings(music_assistant_entry)
 
     assert resolve_control_player(hass, settings, None, satellite_id) == kitchen_player
+
+
+async def test_control_in_named_room_picks_the_playing_player(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    sonos = players.add(
+        music_assistant_entry, "Office Sonos", office.id, state="playing"
+    )
+    settings = make_settings(music_assistant_entry)
+
+    assert resolve_control_player(hass, settings, "office", None) == sonos
 
 
 async def test_control_with_named_room_ignores_activity(

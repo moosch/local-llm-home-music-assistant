@@ -12,10 +12,15 @@ CONF_DISABLED_TOOLS = "disabled_tools"
 TOOL_PLAY_MUSIC = "play_music"
 TOOL_MEDIA_CONTROL = "media_control"
 TOOL_SET_VOLUME = "set_volume"
-ALL_TOOLS = [TOOL_PLAY_MUSIC, TOOL_MEDIA_CONTROL, TOOL_SET_VOLUME]
+TOOL_WHATS_PLAYING = "whats_playing"
+TOOL_SEARCH_MUSIC = "search_music"
+ALL_TOOLS = [
+    TOOL_PLAY_MUSIC,
+    TOOL_MEDIA_CONTROL,
+    TOOL_SET_VOLUME,
+    TOOL_WHATS_PLAYING,
+    TOOL_SEARCH_MUSIC,
+]
 
 MEDIA_TYPES = ["track", "album", "artist", "playlist", "radio"]
 ENQUEUE_OPTIONS = ["play", "next", "add"]
-
-# "Turn it up a bit": a tenth of the player's volume range.
-VOLUME_STEP = 0.1

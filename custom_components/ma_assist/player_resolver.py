@@ -12,11 +12,8 @@ from homeassistant.helpers import (
 from .const import MEDIA_PLAYER_DOMAIN
 from .settings import MaAssistSettings, normalize_room_name
 
-ACTIVE_STATES = {
-    MediaPlayerState.PLAYING,
-    MediaPlayerState.PAUSED,
-    MediaPlayerState.BUFFERING,
-}
+PLAYING_STATES = {MediaPlayerState.PLAYING, MediaPlayerState.BUFFERING}
+PAUSED_STATES = {MediaPlayerState.PAUSED}
 
 
 class PlayerNotFoundError(HomeAssistantError):
@@ -50,6 +47,7 @@ def resolve_control_player(
     settings: MaAssistSettings,
     room: str | None,
     device_id: str | None,
+    resuming: bool = False,
 ) -> str:
     """Like resolve_player, but prefers players that are actually in use.
 
@@ -57,28 +55,57 @@ def resolve_control_player(
     the user is talking to a satellite in a quiet room.
     """
     if room is not None:
-        return resolve_named_room(hass, settings, room)
+        candidates = named_room_players(hass, settings, room)
+        in_use = in_use_players(hass, candidates, resuming)
+        return choose_player(hass, settings, in_use or candidates, room)
 
-    active = active_players(hass, settings)
-    satellite_area_id = device_area_id(hass, device_id)
-    if satellite_area_id is not None:
-        active_here = [
-            entity_id
-            for entity_id in players_in_area(hass, settings, satellite_area_id)
-            if entity_id in active
-        ]
-        if active_here:
-            return choose_player(hass, settings, active_here, "this room")
-
-    if len(active) == 1:
-        return active[0]
+    nearby = in_use_nearby(hass, settings, device_id, resuming)
+    if len(nearby) == 1:
+        return nearby[0]
+    if settings.default_player in nearby:
+        return settings.default_player
+    if nearby:
+        names = ", ".join(player_name(hass, entity_id) for entity_id in nearby)
+        raise PlayerNotFoundError(
+            f"Music is playing on several players: {names}. Ask which one."
+        )
 
     return resolve_player(hass, settings, None, device_id)
+
+
+def in_use_nearby(
+    hass: HomeAssistant,
+    settings: MaAssistSettings,
+    device_id: str | None,
+    resuming: bool = False,
+) -> list[str]:
+    """In-use players in the satellite's room if there are any, else anywhere."""
+    all_players = [
+        player.entity_id for player in music_assistant_players(hass, settings)
+    ]
+    in_use = in_use_players(hass, all_players, resuming)
+
+    satellite_area_id = device_area_id(hass, device_id)
+    if satellite_area_id is None:
+        return in_use
+    in_use_here = [
+        entity_id
+        for entity_id in players_in_area(hass, settings, satellite_area_id)
+        if entity_id in in_use
+    ]
+    return in_use_here or in_use
 
 
 def resolve_named_room(
     hass: HomeAssistant, settings: MaAssistSettings, room: str
 ) -> str:
+    candidates = named_room_players(hass, settings, room)
+    return choose_player(hass, settings, candidates, room)
+
+
+def named_room_players(
+    hass: HomeAssistant, settings: MaAssistSettings, room: str
+) -> list[str]:
     alias_target = settings.room_aliases.get(normalize_room_name(room))
     if alias_target is not None:
         if not is_music_assistant_player(hass, settings, alias_target):
@@ -86,22 +113,46 @@ def resolve_named_room(
                 f"The alias for '{room}' points to {alias_target}, "
                 "which is not a Music Assistant player."
             )
-        return alias_target
+        return [alias_target]
 
     area_id = find_area_id(hass, room)
     if area_id is not None:
         candidates = players_in_area(hass, settings, area_id)
         if candidates:
-            return choose_player(hass, settings, candidates, room)
+            return candidates
 
     candidates = players_named(hass, settings, room)
     if candidates:
-        return choose_player(hass, settings, candidates, room)
+        return candidates
 
     rooms = ", ".join(available_rooms(hass, settings))
     raise PlayerNotFoundError(
         f"No player found for '{room}'. Available rooms: {rooms}."
     )
+
+
+def in_use_players(
+    hass: HomeAssistant, entity_ids: list[str], resuming: bool
+) -> list[str]:
+    """Playing players, or paused ones first when the user wants to resume."""
+    preferred, fallback = PLAYING_STATES, PAUSED_STATES
+    if resuming:
+        preferred, fallback = PAUSED_STATES, PLAYING_STATES
+    matches = players_in_states(hass, entity_ids, preferred)
+    if matches:
+        return matches
+    return players_in_states(hass, entity_ids, fallback)
+
+
+def players_in_states(
+    hass: HomeAssistant, entity_ids: list[str], states: set[MediaPlayerState]
+) -> list[str]:
+    matches: list[str] = []
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        if state is not None and state.state in states:
+            matches.append(entity_id)
+    return matches
 
 
 def choose_player(
@@ -153,15 +204,6 @@ def is_music_assistant_player(
         if player.entity_id == entity_id:
             return True
     return False
-
-
-def active_players(hass: HomeAssistant, settings: MaAssistSettings) -> list[str]:
-    active: list[str] = []
-    for player in music_assistant_players(hass, settings):
-        state = hass.states.get(player.entity_id)
-        if state is not None and state.state in ACTIVE_STATES:
-            active.append(player.entity_id)
-    return active
 
 
 def players_named(
