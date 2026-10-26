@@ -65,12 +65,44 @@ def resolve_control_player(
     if settings.default_player in nearby:
         return settings.default_player
     if nearby:
-        names = ", ".join(player_name(hass, entity_id) for entity_id in nearby)
-        raise PlayerNotFoundError(
-            f"Music is playing on several players: {names}. Ask which one."
-        )
+        raise several_playing_error(hass, nearby)
 
     return resolve_player(hass, settings, None, device_id)
+
+
+def resolve_transfer_source(
+    hass: HomeAssistant,
+    settings: MaAssistSettings,
+    room: str | None,
+    device_id: str | None,
+    destination: str,
+) -> str:
+    if room is not None:
+        source = resolve_control_player(hass, settings, room, device_id)
+    else:
+        nearby = in_use_nearby(hass, settings, device_id)
+        candidates = [entity_id for entity_id in nearby if entity_id != destination]
+        if len(candidates) > 1:
+            raise several_playing_error(hass, candidates, "from_area")
+        if not candidates and destination not in nearby:
+            raise PlayerNotFoundError("Nothing is playing that could be moved.")
+        source = candidates[0] if candidates else destination
+
+    if source == destination:
+        raise PlayerNotFoundError(
+            f"The music is already on {player_name(hass, destination)}."
+        )
+    return source
+
+
+def several_playing_error(
+    hass: HomeAssistant, entity_ids: list[str], argument: str = "area"
+) -> PlayerNotFoundError:
+    names = ", ".join(player_name(hass, entity_id) for entity_id in entity_ids)
+    return PlayerNotFoundError(
+        f"Music is playing on several players: {names}. "
+        f"Ask which one, then retry with its name as `{argument}`."
+    )
 
 
 def in_use_nearby(
@@ -111,7 +143,8 @@ def named_room_players(
         if not is_music_assistant_player(hass, settings, alias_target):
             raise PlayerNotFoundError(
                 f"The alias for '{room}' points to {alias_target}, "
-                "which is not a Music Assistant player."
+                "which is not a Music Assistant player. Tell the user to fix "
+                "this room alias in the Music Assistant Voice Tools options."
             )
         return [alias_target]
 
@@ -127,7 +160,7 @@ def named_room_players(
 
     rooms = ", ".join(available_rooms(hass, settings))
     raise PlayerNotFoundError(
-        f"No player found for '{room}'. Available rooms: {rooms}."
+        f"No player found for '{room}'. Retry with one of: {rooms}; or ask the user."
     )
 
 
@@ -166,7 +199,10 @@ def choose_player(
     if settings.default_player in candidates:
         return settings.default_player
     names = ", ".join(player_name(hass, entity_id) for entity_id in candidates)
-    raise PlayerNotFoundError(f"Several players in {room}: {names}. Ask which one.")
+    raise PlayerNotFoundError(
+        f"Several players in {room}: {names}. "
+        "Ask which one, then retry with its name as `area`."
+    )
 
 
 def music_assistant_players(

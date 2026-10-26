@@ -12,6 +12,7 @@ from custom_components.ma_assist.tools import (
     PlayMusicTool,
     SearchMusicTool,
     SetVolumeTool,
+    TransferPlaybackTool,
     WhatsPlayingTool,
     build_tools,
 )
@@ -98,6 +99,7 @@ async def test_api_instance_lists_rooms_and_tools(
         "play_music",
         "media_control",
         "set_volume",
+        "transfer_playback",
         "whats_playing",
         "search_music",
     ]
@@ -111,6 +113,7 @@ def test_disabled_tools_are_left_out() -> None:
     assert [tool.name for tool in build_tools(settings)] == [
         "play_music",
         "media_control",
+        "transfer_playback",
         "whats_playing",
     ]
 
@@ -389,3 +392,202 @@ async def test_search_music_by_type_asks_for_more_results(
     assert result == llm.ToolResult(data={"results": []})
     assert calls[0].data["media_type"] == ["playlist"]
     assert calls[0].data["limit"] == 5
+
+
+async def test_play_music_passes_radio_mode(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    calls = async_mock_service(hass, "music_assistant", "play_media")
+    tool = PlayMusicTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="play_music",
+        tool_args={"query": "Hot Potato", "area": "office", "radio_mode": True},
+    )
+
+    await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert calls[0].data["radio_mode"] is True
+
+
+async def test_media_control_turns_shuffle_on(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    calls = async_mock_service(hass, "media_player", "shuffle_set")
+    tool = MediaControlTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="media_control", tool_args={"action": "shuffle_on"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result == llm.ToolResult(
+        data={"done": "shuffle_on", "player": "Office WiiM"}
+    )
+    assert [call.data for call in calls] == [{"entity_id": player, "shuffle": True}]
+
+
+async def test_media_control_sets_repeat(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    calls = async_mock_service(hass, "media_player", "repeat_set")
+    tool = MediaControlTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="media_control", tool_args={"action": "repeat_one"}
+    )
+
+    await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert [call.data for call in calls] == [{"entity_id": player, "repeat": "one"}]
+
+
+async def test_transfer_moves_the_playing_queue(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    office_player = players.add(
+        music_assistant_entry, "Office WiiM", office.id, state="playing"
+    )
+    kitchen_player = players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    calls = async_mock_service(hass, "music_assistant", "transfer_queue")
+    tool = TransferPlaybackTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="transfer_playback", tool_args={"to_area": "kitchen"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result == llm.ToolResult(
+        data={"moved_from": "Office WiiM", "moved_to": "Kitchen Speaker"}
+    )
+    assert calls[0].data == {
+        "entity_id": kitchen_player,
+        "source_player": office_player,
+        "auto_play": True,
+    }
+
+
+async def test_transfer_from_named_room(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+    area_registry: ar.AreaRegistry,
+) -> None:
+    lounge = area_registry.async_create("Lounge")
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    lounge_player = players.add(
+        music_assistant_entry, "Lounge Sonos", lounge.id, state="playing"
+    )
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    calls = async_mock_service(hass, "music_assistant", "transfer_queue")
+    tool = TransferPlaybackTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="transfer_playback",
+        tool_args={"to_area": "kitchen", "from_area": "lounge"},
+    )
+
+    await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert calls[0].data["source_player"] == lounge_player
+
+
+async def test_transfer_with_nothing_playing(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+    kitchen: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    players.add(music_assistant_entry, "Kitchen Speaker", kitchen.id)
+    calls = async_mock_service(hass, "music_assistant", "transfer_queue")
+    tool = TransferPlaybackTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="transfer_playback", tool_args={"to_area": "kitchen"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.error is True
+    assert "Nothing is playing" in str(result.data["error"])
+    assert calls == []
+
+
+async def test_transfer_to_the_room_already_playing(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id, state="playing")
+    calls = async_mock_service(hass, "music_assistant", "transfer_queue")
+    tool = TransferPlaybackTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="transfer_playback", tool_args={"to_area": "office"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.error is True
+    assert "already on Office WiiM" in str(result.data["error"])
+    assert calls == []
+
+
+async def test_invalid_arguments_are_reported_to_the_model(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    calls = async_mock_service(hass, "music_assistant", "play_media")
+    tool = PlayMusicTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="play_music",
+        tool_args={"query": "Hot Potato", "media_type": "song"},
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.error is True
+    assert "Invalid arguments" in str(result.data["error"])
+    assert calls == []
+
+
+async def test_arguments_are_coerced(
+    hass: HomeAssistant,
+    music_assistant_entry: MockConfigEntry,
+    players: PlayerFactory,
+    office: ar.AreaEntry,
+) -> None:
+    players.add(music_assistant_entry, "Office WiiM", office.id)
+    calls = async_mock_service(hass, "media_player", "volume_set")
+    tool = SetVolumeTool(MaAssistSettings(music_assistant_entry.entry_id))
+    tool_input = llm.ToolInput(
+        tool_name="set_volume", tool_args={"level": "40", "area": "office"}
+    )
+
+    result = await tool.async_call(hass, tool_input, make_llm_context())
+
+    assert result.data["volume"] == 40
+    assert calls[0].data["volume_level"] == 0.4

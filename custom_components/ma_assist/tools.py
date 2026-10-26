@@ -1,6 +1,7 @@
 """LLM tools for controlling Music Assistant."""
 
 from abc import abstractmethod
+from dataclasses import dataclass, field
 from typing import Any
 
 import probatio
@@ -8,8 +9,11 @@ import probatio
 from homeassistant.components.media_player import (
     ATTR_MEDIA_ALBUM_NAME,
     ATTR_MEDIA_ARTIST,
+    ATTR_MEDIA_REPEAT,
+    ATTR_MEDIA_SHUFFLE,
     ATTR_MEDIA_TITLE,
     ATTR_MEDIA_VOLUME_LEVEL,
+    RepeatMode,
 )
 from homeassistant.const import (
     SERVICE_MEDIA_NEXT_TRACK,
@@ -17,6 +21,8 @@ from homeassistant.const import (
     SERVICE_MEDIA_PLAY,
     SERVICE_MEDIA_PREVIOUS_TRACK,
     SERVICE_MEDIA_STOP,
+    SERVICE_REPEAT_SET,
+    SERVICE_SHUFFLE_SET,
     SERVICE_VOLUME_SET,
 )
 from homeassistant.core import HomeAssistant, ServiceResponse
@@ -34,24 +40,39 @@ from .const import (
     TOOL_PLAY_MUSIC,
     TOOL_SEARCH_MUSIC,
     TOOL_SET_VOLUME,
+    TOOL_TRANSFER_PLAYBACK,
     TOOL_WHATS_PLAYING,
 )
 from .player_resolver import (
     in_use_nearby,
     player_name,
     resolve_control_player,
+    resolve_named_room,
     resolve_player,
+    resolve_transfer_source,
 )
 from .settings import MaAssistSettings
 
 type ToolArgs = dict[str, Any]
 
-MEDIA_CONTROL_SERVICES = {
-    "pause": SERVICE_MEDIA_PAUSE,
-    "resume": SERVICE_MEDIA_PLAY,
-    "stop": SERVICE_MEDIA_STOP,
-    "next": SERVICE_MEDIA_NEXT_TRACK,
-    "previous": SERVICE_MEDIA_PREVIOUS_TRACK,
+
+@dataclass(frozen=True, slots=True)
+class MediaCommand:
+    service: str
+    data: dict[str, object] = field(default_factory=dict)
+
+
+MEDIA_COMMANDS = {
+    "pause": MediaCommand(SERVICE_MEDIA_PAUSE),
+    "resume": MediaCommand(SERVICE_MEDIA_PLAY),
+    "stop": MediaCommand(SERVICE_MEDIA_STOP),
+    "next": MediaCommand(SERVICE_MEDIA_NEXT_TRACK),
+    "previous": MediaCommand(SERVICE_MEDIA_PREVIOUS_TRACK),
+    "shuffle_on": MediaCommand(SERVICE_SHUFFLE_SET, {ATTR_MEDIA_SHUFFLE: True}),
+    "shuffle_off": MediaCommand(SERVICE_SHUFFLE_SET, {ATTR_MEDIA_SHUFFLE: False}),
+    "repeat_one": MediaCommand(SERVICE_REPEAT_SET, {ATTR_MEDIA_REPEAT: RepeatMode.ONE}),
+    "repeat_all": MediaCommand(SERVICE_REPEAT_SET, {ATTR_MEDIA_REPEAT: RepeatMode.ALL}),
+    "repeat_off": MediaCommand(SERVICE_REPEAT_SET, {ATTR_MEDIA_REPEAT: RepeatMode.OFF}),
 }
 
 NOW_PLAYING_ATTRIBUTES = {
@@ -84,7 +105,13 @@ class MusicAssistantTool(llm.Tool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         try:
-            data = await self.async_run(hass, tool_input.tool_args, llm_context)
+            # Home Assistant hands tools the model's raw arguments unvalidated.
+            args = self.parameters(tool_input.tool_args)
+            data = await self.async_run(hass, args, llm_context)
+        except probatio.Invalid as err:
+            return llm.ToolResult(
+                data={"error": f"Invalid arguments: {err}"}, error=True
+            )
         except HomeAssistantError as err:
             return llm.ToolResult(data={"error": str(err)}, error=True)
         return llm.ToolResult(data=data)
@@ -101,7 +128,8 @@ class PlayMusicTool(MusicAssistantTool):
     description = (
         "Play a song, album, artist, playlist or radio station. "
         "`query` is what to play, e.g. 'Hot Potato by The Wiggles', "
-        "or a `uri` from search_music."
+        "or a `uri` from search_music. Set `radio_mode` for 'songs like ...' "
+        "to keep playing similar music."
     )
     parameters = probatio.Schema(
         {
@@ -109,6 +137,7 @@ class PlayMusicTool(MusicAssistantTool):
             probatio.Optional("area"): str,
             probatio.Optional("media_type"): probatio.In(MEDIA_TYPES),
             probatio.Optional("enqueue"): probatio.In(ENQUEUE_OPTIONS),
+            probatio.Optional("radio_mode"): bool,
         }
     )
 
@@ -132,12 +161,12 @@ class PlayMusicTool(MusicAssistantTool):
 class MediaControlTool(MusicAssistantTool):
     name = TOOL_MEDIA_CONTROL
     description = (
-        "Pause, resume, stop (turn off) or skip the music. "
+        "Pause, resume, stop (turn off), skip, shuffle or repeat the music. "
         "Use this, not a turn-off tool, for music."
     )
     parameters = probatio.Schema(
         {
-            probatio.Required("action"): probatio.In(list(MEDIA_CONTROL_SERVICES)),
+            probatio.Required("action"): probatio.In(list(MEDIA_COMMANDS)),
             probatio.Optional("area"): str,
         }
     )
@@ -152,9 +181,11 @@ class MediaControlTool(MusicAssistantTool):
             llm_context.device_id,
             resuming=args["action"] == "resume",
         )
+        command = MEDIA_COMMANDS[args["action"]]
         await hass.services.async_call(
             MEDIA_PLAYER_DOMAIN,
-            MEDIA_CONTROL_SERVICES[args["action"]],
+            command.service,
+            command.data,
             target={"entity_id": player},
             blocking=True,
             context=llm_context.context,
@@ -197,6 +228,41 @@ class SetVolumeTool(MusicAssistantTool):
             context=llm_context.context,
         )
         return {"volume": round(volume * 100), "player": player_name(hass, player)}
+
+
+class TransferPlaybackTool(MusicAssistantTool):
+    name = TOOL_TRANSFER_PLAYBACK
+    description = "Move the music from one room to another, keeping its place."
+    parameters = probatio.Schema(
+        {
+            probatio.Required("to_area"): str,
+            probatio.Optional("from_area"): str,
+        }
+    )
+
+    async def async_run(
+        self, hass: HomeAssistant, args: ToolArgs, llm_context: llm.LLMContext
+    ) -> JsonObjectType:
+        destination = resolve_named_room(hass, self.settings, args["to_area"])
+        source = resolve_transfer_source(
+            hass,
+            self.settings,
+            args.get("from_area"),
+            llm_context.device_id,
+            destination,
+        )
+        await hass.services.async_call(
+            MUSIC_ASSISTANT_DOMAIN,
+            "transfer_queue",
+            {"source_player": source, "auto_play": True},
+            target={"entity_id": destination},
+            blocking=True,
+            context=llm_context.context,
+        )
+        return {
+            "moved_from": player_name(hass, source),
+            "moved_to": player_name(hass, destination),
+        }
 
 
 class WhatsPlayingTool(MusicAssistantTool):
@@ -248,9 +314,9 @@ class SearchMusicTool(MusicAssistantTool):
         return {"results": search_results(response)}
 
 
-def play_media_data(args: ToolArgs) -> dict[str, str]:
-    data = {"media_id": args["query"]}
-    for key in ("media_type", "enqueue"):
+def play_media_data(args: ToolArgs) -> dict[str, object]:
+    data: dict[str, object] = {"media_id": args["query"]}
+    for key in ("media_type", "enqueue", "radio_mode"):
         if key in args:
             data[key] = args[key]
     return data
@@ -269,7 +335,9 @@ def current_volume(hass: HomeAssistant, player: str) -> float:
     state = hass.states.get(player)
     level = state.attributes.get(ATTR_MEDIA_VOLUME_LEVEL) if state else None
     if level is None:
-        raise HomeAssistantError("Current volume is unknown. Give a level instead.")
+        raise HomeAssistantError(
+            "Current volume is unknown. Ask the user for a level from 0 to 100."
+        )
     return float(level)
 
 
@@ -333,6 +401,7 @@ def build_tools(settings: MaAssistSettings) -> list[llm.Tool]:
         PlayMusicTool(settings),
         MediaControlTool(settings),
         SetVolumeTool(settings),
+        TransferPlaybackTool(settings),
         WhatsPlayingTool(settings),
         SearchMusicTool(settings),
     ]

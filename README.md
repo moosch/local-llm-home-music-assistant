@@ -4,7 +4,8 @@ A Home Assistant custom integration (`ma_assist`) that gives LLM conversation ag
 room-aware control of [Music Assistant](https://www.music-assistant.io/), using Home
 Assistant's native LLM Tools API.
 
-> "Play my Dinner Playlist in the office" · "Play Hot Potato by The Wiggles"
+> "Play my Dinner Playlist in the office" · "Play songs like Hot Potato" ·
+> "Turn it down a bit" · "Move the music to the kitchen" · "What's playing?"
 
 ## Requirements
 
@@ -64,9 +65,10 @@ Pause, skip and volume commands go to whatever is playing:
 
 | Tool | What it does |
 |------|--------------|
-| `play_music` | Play a song, album, artist, playlist or radio station |
-| `media_control` | Pause, resume, stop, next, previous |
+| `play_music` | Play a song, album, artist, playlist or radio station; radio mode keeps playing similar music |
+| `media_control` | Pause, resume, stop, next, previous, shuffle on/off, repeat one/all/off |
 | `set_volume` | Set a level (0–100) or change it by a percentage |
+| `transfer_playback` | Move the music to another room, keeping its place in the queue |
 | `whats_playing` | What's playing, and where |
 | `search_music` | Find songs, albums, artists, playlists or radio; results can be played exactly |
 
